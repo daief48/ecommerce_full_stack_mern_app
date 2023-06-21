@@ -3,54 +3,61 @@ const catchAsyncErrors = require("../middleware/catchAsyncError");
 const User = require("../models/userModel");
 const sendToken = require("../utils/jwtToken");
 const sendEmail = require("../utils/sendEmail");
+const crypto = require("crypto");
 // Register a User
-exports.registerUser = catchAsyncErrors( async(req, res, next) => {
-    const {name, email, password} = req.body;
+exports.registerUser = catchAsyncErrors(async (req, res, next) => {
+    const { name, email, password } = req.body;
 
     const user = await User.create({
         name,
         email,
         password,
-        avatar:{
+        avatar: {
             public_id: "this is a sample id",
             url: "profilepicUrl",
         }
     });
 
-    sendToken(user , 201 , res);
+    sendToken(user, 201, res);
 })
 
 // Login User
-exports.loginUser = catchAsyncErrors( async (req, res, next) =>{
-    const {email, password} = req.body;
+exports.loginUser = catchAsyncErrors(async (req, res, next) => {
+    const { email, password } = req.body;
 
     // checking if user has given password and email both
-    if(!email || !password){
-        return next(new ErrorHander("Please Enter Eamil and Password",400))
+
+    if (!email || !password) {
+        return next(new ErrorHander("Please Enter Email & Password", 400));
     }
 
-    const user = await User.findOne({email}).select("+password");
+    const user = await User.findOne({ email }).select("+password");
 
-    if(!user){
-        return next(new ErrorHander("Invaild email or password",401));
+    if (!user) {
+        return next(new ErrorHander("Invalid email or password", 401));
     }
 
-    const isPasswordMatched = user.comparePassword(password);
+    const isPasswordMatched = await user.comparePassword(password);
 
-    sendToken(user , 200 , res);
-})
-// Reset Password
-exports.forgotPassword = catchAsyncErrors( async (req, res, next) =>{
-    const user = await User.findOne({email: req.body.email});
+    if (!isPasswordMatched) {
+        return next(new ErrorHander("Invalid email or password", 401));
+    }
 
-    if(!user){
-        return next(new ErrorHander("Invaild email or password",401));
+    sendToken(user, 200, res);
+});
+
+// forgot Password
+exports.forgotPassword = catchAsyncErrors(async (req, res, next) => {
+    const user = await User.findOne({ email: req.body.email });
+
+    if (!user) {
+        return next(new ErrorHander("Invaild email or password", 401));
     }
 
     // Get ResetPassword Token
     const resetToken = user.getResetPasswordToken();
 
-    await user.save({ validateBeforeSave: false});
+    await user.save({ validateBeforeSave: false });
 
     const resetPasswordUrl = `${req.protocol}://${req.get("host")}/api/v1/password/reset/${resetToken}`;
 
@@ -59,7 +66,7 @@ exports.forgotPassword = catchAsyncErrors( async (req, res, next) =>{
     try {
         await sendEmail({
             email: user.email,
-            subject:   `Ecommerce Password Recovery`,
+            subject: `Ecommerce Password Recovery`,
             message
         })
 
@@ -71,8 +78,36 @@ exports.forgotPassword = catchAsyncErrors( async (req, res, next) =>{
         user.resetPasswordToken = undefined;
         user.resetPasswordExpire = undefined;
 
-        await user.save({ validateBeforeSave: false});
+        await user.save({ validateBeforeSave: false });
 
-        return next( new ErrorHander(error.message, 500))
+        return next(new ErrorHander(error.message, 500))
     }
+})
+
+// Reset Password
+exports.resetPassword = catchAsyncErrors(async (req, res, next) => {
+    // Creating token hash
+    const resetPasswordToken = crypto.createHash("sha256").update(req.params.token).digest("hex");
+
+    const user = await User.findOne({
+        resetPasswordToken,
+        resetPasswordExpire: { $gt: Date.now() }
+    })
+    if (!user) {
+        return next(
+            new ErrorHander("Reset Password Token is invalid or has been expired", 400)
+        )
+    }
+
+    if (req.body.password !== req.body.confirmPassword) {
+        return next(new ErrorHander("Password does not password", 400))
+    }
+
+    user.password = req.body.password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+
+    await user.save();
+
+    sendToken(user, 200, res)
 })
